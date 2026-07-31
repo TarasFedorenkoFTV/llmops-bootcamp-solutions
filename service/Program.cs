@@ -229,7 +229,7 @@ app.MapGet("/observability", async () =>
     });
 });
 
-// [W5/W7] здоров'я провайдерів (на mock — завжди ok)
+// [W5] здоров'я провайдерів (на mock — завжди ok)
 app.MapGet("/providers", () => Results.Json(new
 {
     providers = new[] { new { name = "mock", status = "ok" } }
