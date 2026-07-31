@@ -68,7 +68,13 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         for (int i = 0; i < chain.Length && !ok; i++)
         {
             var br = breakers.GetOrAdd(chain[i], _ => new Breaker());
-            if (br.OpenUntil > DateTimeOffset.UtcNow) continue;  // [W4] circuit open -> пропускаємо модель
+            var now = DateTimeOffset.UtcNow;
+            if (br.OpenUntil > now)
+            {
+                // [W4] half-open: раз на 5с пропускаємо пробний запит; успіх закриє circuit
+                if (now < br.NextProbe) continue;
+                br.NextProbe = now.AddSeconds(5);
+            }
             if (i > 0) Interlocked.Increment(ref stats.Fallbacks);
             var res = await CallGateway(http, gateway, chain[i], systemPrompt, userMessage);
             status = res.status;
@@ -84,7 +90,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
             }
             else if (++br.Fails >= 3)
             {
-                br.OpenUntil = DateTimeOffset.UtcNow.AddSeconds(30);  // [W4] відкриваємо на 30с
+                br.OpenUntil = DateTimeOffset.UtcNow.AddSeconds(30);  // [W4] відкриваємо на 30с (probe кожні 5с)
             }
         }
 
@@ -333,6 +339,6 @@ class Stats
 
 record Approval(string Action, string? Result);
 
-class Breaker { public int Fails; public DateTimeOffset OpenUntil; }
+class Breaker { public int Fails; public DateTimeOffset OpenUntil; public DateTimeOffset NextProbe; }
 
 record ChatIn(string Message);
