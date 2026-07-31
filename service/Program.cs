@@ -1,9 +1,11 @@
-// РЕФЕРЕНС (кумулятивно): W1 prompt registry, W2 routing+cost, W3 cache+tools.
-// Кеш і лічильники — in-memory (для еталона досить; у проді — Redis).
+// РЕФЕРЕНС (кумулятивно): W1 prompt registry, W2 routing+cost, W3 cache+tools,
+// W4 fallback + graceful degradation, HITL-approval, guardrails (маскування PII).
+// Кеш/лічильники/черга approvals — in-memory (для еталона досить; у проді — Redis/БД).
 
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,7 +17,6 @@ var dbConn = Environment.GetEnvironmentVariable("DB_CONN")
     ?? "Host=postgres;Database=llmops;Username=llmops;Password=llmops";
 var defaultModel = Environment.GetEnvironmentVariable("MODEL") ?? "mock";
 
-// [W2] прайс за 1k токенів (in, out)
 var prices = new Dictionary<string, (decimal In, decimal Out)>
 {
     ["mock-mini"] = (0.00015m, 0.0006m),
@@ -24,25 +25,26 @@ var prices = new Dictionary<string, (decimal In, decimal Out)>
     ["gpt-4o"] = (0.0025m, 0.01m),
 };
 
-// [W3] простий in-memory кеш + лічильники
 var cache = new ConcurrentDictionary<string, string>();
 var stats = new Stats();
+// [W4] черга підтверджень (HITL): id -> (дія, результат). result == null => очікує
+var approvals = new ConcurrentDictionary<string, Approval>();
 
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
     var requestId = Guid.NewGuid();
     var startedAt = DateTimeOffset.UtcNow;
 
-    // guardrails (W4): TODO(student, W4)
+    // [W4] guardrails: маскуємо email перед відправкою в модель
+    var userMessage = MaskPii(body.Message);
 
     // [W2] routing
     var model = Route(body.Message, defaultModel);
 
-    // [W1] активний промпт із реєстру
+    // [W1] активний промпт
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
 
-    // [W3] кеш: якщо вже відповідали на цей самий запит — беремо звідти, у модель не йдемо
-    var cacheKey = $"{model}|{systemPrompt}|{body.Message}";
+    var cacheKey = $"{model}|{systemPrompt}|{userMessage}";
     var answer = "";
     string? toolCall = null;
     int promptTokens = 0, completionTokens = 0, status = 200;
@@ -56,52 +58,59 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     {
         Interlocked.Increment(ref stats.CacheMisses);
 
-        // fallback (W4): TODO(student, W4)
-        var payload = JsonSerializer.Serialize(new
-        {
-            model,
-            messages = new object[]
-            {
-                new { role = "system", content = systemPrompt },
-                new { role = "user", content = body.Message }
-            }
-        });
+        // [W4] fallback: пробуємо по черзі; на mock другий елемент — та сама модель,
+        // тож на реальний провайдер треба міняти список (напр. [model, "azure-gpt-4o"]).
+        var chain = defaultModel == "mock" ? new[] { model, "mock" } : new[] { model, "azure-gpt-4o" };
         var http = httpFactory.CreateClient();
-        var response = await http.PostAsync(
-            $"{gateway}/v1/chat/completions",
-            new StringContent(payload, Encoding.UTF8, "application/json"));
-        status = (int)response.StatusCode;
-        var rawJson = await response.Content.ReadAsStringAsync();
-        try
+        var ok = false;
+        for (int i = 0; i < chain.Length && !ok; i++)
         {
-            using var doc = JsonDocument.Parse(rawJson);
-            var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
-            answer = message.GetProperty("content").GetString() ?? "";
-            if (message.TryGetProperty("tool_calls", out var tools)
-                && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0)
+            if (i > 0) Interlocked.Increment(ref stats.Fallbacks);
+            var res = await CallGateway(http, gateway, chain[i], systemPrompt, userMessage);
+            status = res.status;
+            if (res.ok)
             {
-                toolCall = tools[0].GetProperty("function").GetProperty("name").GetString();
-                // [W3] виконуємо інструмент і додаємо результат до відповіді
+                ok = true;
+                model = chain[i];
+                answer = res.answer;
+                toolCall = res.tool;
+                promptTokens = res.pt;
+                completionTokens = res.ct;
+            }
+        }
+
+        if (!ok)
+        {
+            // graceful degradation — усі спроби невдалі
+            answer = "Вибачте, тимчасові проблеми на нашому боці. Спробуйте, будь ласка, трохи згодом.";
+            status = status == 200 ? 503 : status;
+        }
+        else if (toolCall != null)
+        {
+            // [W3/W4] інструменти: read-only виконуємо одразу; незворотну дію — через approval
+            if (toolCall == "create_ticket")
+            {
+                var id = Guid.NewGuid().ToString("N")[..6];
+                approvals[id] = new Approval(toolCall, null);
+                answer += $" (очікує підтвердження оператора, id={id})";
+            }
+            else
+            {
                 var result = RunTool(toolCall);
                 if (result != null) answer += $" ({result})";
             }
-            var usage = doc.RootElement.GetProperty("usage");
-            promptTokens = usage.GetProperty("prompt_tokens").GetInt32();
-            completionTokens = usage.GetProperty("completion_tokens").GetInt32();
         }
-        catch { answer = "Сервіс тимчасово недоступний."; }
 
-        if (status == 200) cache[cacheKey] = answer;
+        // кешуємо лише «чисті» відповіді без інструментів
+        if (ok && status == 200 && toolCall == null) cache[cacheKey] = answer;
     }
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
 
-    // [W2] cost
     decimal? costUsd = prices.TryGetValue(model, out var pr)
         ? Math.Round(promptTokens / 1000m * pr.In + completionTokens / 1000m * pr.Out, 6)
         : null;
 
-    // [W1] лог із версією промпта
     await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, status);
 
     return Results.Json(new { request_id = requestId, content = answer, tool = toolCall, latency_ms = latencyMs });
@@ -109,7 +118,6 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// [W1] реєстр промптів
 app.MapGet("/prompts", async () =>
 {
     var list = new List<object>();
@@ -126,7 +134,6 @@ app.MapGet("/prompts", async () =>
     return Results.Json(list);
 });
 
-// [W1] promote / rollback
 app.MapPost("/prompts/{version}/activate", async (string version) =>
 {
     try
@@ -141,7 +148,6 @@ app.MapPost("/prompts/{version}/activate", async (string version) =>
     return Results.Ok(new { activated = version });
 });
 
-// [W2] вартість за сьогодні + бюджет
 app.MapGet("/cost", async () =>
 {
     decimal today = 0;
@@ -157,14 +163,70 @@ app.MapGet("/cost", async () =>
     return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
 });
 
-// решта — стуби
+// [W4] черга HITL: pending — ті, що очікують
+app.MapGet("/approvals", () =>
+{
+    var pending = approvals
+        .Where(kv => kv.Value.Result == null)
+        .Select(kv => new { id = kv.Key, action = kv.Value.Action })
+        .ToList();
+    return Results.Json(new { pending });
+});
+
+// [W4] підтвердити дію -> виконати інструмент
+app.MapPost("/approvals/{id}/approve", (string id) =>
+{
+    if (approvals.TryGetValue(id, out var a) && a.Result == null)
+    {
+        var result = RunTool(a.Action) ?? "виконано";
+        approvals[id] = a with { Result = result };
+        return Results.Ok(new { id, result });
+    }
+    return Results.NotFound(new { id, error = "not found or already done" });
+});
+
 app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
 app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
-app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
 app.Run("http://0.0.0.0:8080");
 
-// [W1] активний промпт із реєстру
+// один виклик моделі через gateway; ok=false, якщо мережевий збій або статус >= 400
+static async Task<(bool ok, string answer, string? tool, int pt, int ct, int status)> CallGateway(
+    HttpClient http, string gateway, string model, string system, string user)
+{
+    try
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            model,
+            messages = new object[]
+            {
+                new { role = "system", content = system },
+                new { role = "user", content = user }
+            }
+        });
+        var resp = await http.PostAsync($"{gateway}/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+        var status = (int)resp.StatusCode;
+        if (status >= 400) return (false, "", null, 0, 0, status);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
+        var answer = message.GetProperty("content").GetString() ?? "";
+        string? tool = null;
+        if (message.TryGetProperty("tool_calls", out var tools)
+            && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0)
+            tool = tools[0].GetProperty("function").GetProperty("name").GetString();
+        var usage = doc.RootElement.GetProperty("usage");
+        return (true, answer, tool, usage.GetProperty("prompt_tokens").GetInt32(),
+            usage.GetProperty("completion_tokens").GetInt32(), status);
+    }
+    catch
+    {
+        return (false, "", null, 0, 0, 0);  // мережевий збій / gateway лежить
+    }
+}
+
 static async Task<(string version, string body)> GetActivePrompt(string conn)
 {
     try
@@ -203,7 +265,6 @@ static async Task LogRequest(string conn, Guid id, string model, string promptVe
     catch { }
 }
 
-// [W2] маршрутизація: ескалацію — на сильнішу модель
 static string Route(string message, string def)
 {
     if (def != "mock") return def;
@@ -212,7 +273,9 @@ static string Route(string message, string def)
     return escalation ? "mock-strong" : "mock-mini";
 }
 
-// [W3] мінімальний реєстр інструментів
+// [W4] маскуємо email (найпростіший guardrail на PII)
+static string MaskPii(string s) => Regex.Replace(s, @"[\w.\-]+@[\w.\-]+", "[email]");
+
 static string? RunTool(string name) => name switch
 {
     "lookup_order" => "статус: оплачено, доставку призначено",
@@ -226,5 +289,7 @@ class Stats
     public int CacheMisses;
     public int Fallbacks;
 }
+
+record Approval(string Action, string? Result);
 
 record ChatIn(string Message);
