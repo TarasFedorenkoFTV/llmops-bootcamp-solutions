@@ -91,7 +91,8 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         }
         catch { answer = "Сервіс тимчасово недоступний."; }
 
-        if (status == 200) cache[cacheKey] = answer;
+        // [W3] кешуємо лише «чисті» відповіді без інструментів (tool-результат — стан на мить)
+        if (status == 200 && toolCall == null) cache[cacheKey] = answer;
     }
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
