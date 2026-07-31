@@ -185,8 +185,40 @@ app.MapPost("/approvals/{id}/approve", (string id) =>
     return Results.NotFound(new { id, error = "not found or already done" });
 });
 
-app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
-app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
+// [W5] агрегати за сьогодні: requests / p95 latency / error-rate з БД,
+// cache-hit і fallback — з in-memory лічильників. Консоль показує ці плитки.
+app.MapGet("/observability", async () =>
+{
+    long requests = 0; double p95 = 0, errorRate = 0;
+    try
+    {
+        await using var db = new NpgsqlConnection(dbConn);
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT count(*)::int8, "
+            + "COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::float8, "
+            + "COALESCE(AVG(CASE WHEN status <> '200' THEN 1.0 ELSE 0 END), 0)::float8 * 100 "
+            + "FROM requests WHERE created_at::date = CURRENT_DATE", db);
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (await r.ReadAsync()) { requests = r.GetInt64(0); p95 = r.GetDouble(1); errorRate = r.GetDouble(2); }
+    }
+    catch { }
+    int total = stats.CacheHits + stats.CacheMisses;
+    return Results.Json(new
+    {
+        p95_ms = (int)p95,
+        requests,
+        cache_hit_pct = total == 0 ? 0 : Math.Round(stats.CacheHits * 100.0 / total, 1),
+        error_rate_pct = Math.Round(errorRate, 1),
+        fallback_events = stats.Fallbacks,
+    });
+});
+
+// [W5/W7] здоров'я провайдерів (на mock — завжди ok)
+app.MapGet("/providers", () => Results.Json(new
+{
+    providers = new[] { new { name = "mock", status = "ok" } }
+}));
 
 app.Run("http://0.0.0.0:8080");
 
