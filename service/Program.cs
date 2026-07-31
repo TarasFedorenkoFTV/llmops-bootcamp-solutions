@@ -140,7 +140,7 @@ app.MapGet("/cost", async () =>
     catch { }
     return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
 });
-app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
+app.MapGet("/providers", () => Results.Json(new { todo = "W5" }));
 app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
 app.Run("http://0.0.0.0:8080");
