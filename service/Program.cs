@@ -159,7 +159,7 @@ app.MapGet("/cost", async () =>
 
 // решта — стуби
 app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
-app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
+app.MapGet("/providers", () => Results.Json(new { todo = "W5" }));
 app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
 app.Run("http://0.0.0.0:8080");
