@@ -201,7 +201,7 @@ app.MapPost("/approvals/{id}/approve", (string id) =>
 });
 
 app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
-app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
+app.MapGet("/providers", () => Results.Json(new { todo = "W5" }));
 
 app.Run("http://0.0.0.0:8080");
 
