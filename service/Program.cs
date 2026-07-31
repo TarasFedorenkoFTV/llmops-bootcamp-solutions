@@ -1,8 +1,7 @@
-// РЕФЕРЕНС W1 (для ментора). Реалізовано лише перший тиждень:
-//   prompt registry — читаємо активний промпт із БД, логуємо його версію,
-//   віддаємо список у /prompts, вміємо promote/rollback.
-// Решта (routing, cost, cache, tools, fallback, guardrails) лишається TODO — як у стартері.
+// РЕФЕРЕНС (кумулятивно): W1 prompt registry, W2 routing+cost, W3 cache+tools.
+// Кеш і лічильники — in-memory (для еталона досить; у проді — Redis).
 
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -16,7 +15,7 @@ var dbConn = Environment.GetEnvironmentVariable("DB_CONN")
     ?? "Host=postgres;Database=llmops;Username=llmops;Password=llmops";
 var defaultModel = Environment.GetEnvironmentVariable("MODEL") ?? "mock";
 
-// [W2] прайс за 1k токенів (in, out) — навчальні числа
+// [W2] прайс за 1k токенів (in, out)
 var prices = new Dictionary<string, (decimal In, decimal Out)>
 {
     ["mock-mini"] = (0.00015m, 0.0006m),
@@ -25,73 +24,92 @@ var prices = new Dictionary<string, (decimal In, decimal Out)>
     ["gpt-4o"] = (0.0025m, 0.01m),
 };
 
+// [W3] простий in-memory кеш + лічильники
+var cache = new ConcurrentDictionary<string, string>();
+var stats = new Stats();
+
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
     var requestId = Guid.NewGuid();
     var startedAt = DateTimeOffset.UtcNow;
 
-    // guardrails (W4): поки нічого. TODO(student, W4)
+    // guardrails (W4): TODO(student, W4)
 
-    // [W2] routing: ескалація -> сильна модель, решта -> дешева
+    // [W2] routing
     var model = Route(body.Message, defaultModel);
 
-    // [W1] промпт беремо з реєстру — активну версію, а не хардкод
+    // [W1] активний промпт із реєстру
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
 
-    // cache (W3): TODO(student, W3)
-
-    // fallback (W4): TODO(student, W4)
-    var payload = JsonSerializer.Serialize(new
-    {
-        model,
-        messages = new object[]
-        {
-            new { role = "system", content = systemPrompt },
-            new { role = "user", content = body.Message }
-        }
-    });
-
-    var http = httpFactory.CreateClient();
-    var response = await http.PostAsync(
-        $"{gateway}/v1/chat/completions",
-        new StringContent(payload, Encoding.UTF8, "application/json"));
-    var rawJson = await response.Content.ReadAsStringAsync();
-
+    // [W3] кеш: якщо вже відповідали на цей самий запит — беремо звідти, у модель не йдемо
+    var cacheKey = $"{model}|{systemPrompt}|{body.Message}";
     var answer = "";
     string? toolCall = null;
-    int promptTokens = 0, completionTokens = 0;
-    try
+    int promptTokens = 0, completionTokens = 0, status = 200;
+
+    if (cache.TryGetValue(cacheKey, out var cached))
     {
-        using var doc = JsonDocument.Parse(rawJson);
-        var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
-        answer = message.GetProperty("content").GetString() ?? "";
-        if (message.TryGetProperty("tool_calls", out var tools)
-            && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0)
-        {
-            toolCall = tools[0].GetProperty("function").GetProperty("name").GetString();
-        }
-        var usage = doc.RootElement.GetProperty("usage");
-        promptTokens = usage.GetProperty("prompt_tokens").GetInt32();
-        completionTokens = usage.GetProperty("completion_tokens").GetInt32();
+        answer = cached;
+        Interlocked.Increment(ref stats.CacheHits);
     }
-    catch { answer = "Сервіс тимчасово недоступний."; }
+    else
+    {
+        Interlocked.Increment(ref stats.CacheMisses);
+
+        // fallback (W4): TODO(student, W4)
+        var payload = JsonSerializer.Serialize(new
+        {
+            model,
+            messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = body.Message }
+            }
+        });
+        var http = httpFactory.CreateClient();
+        var response = await http.PostAsync(
+            $"{gateway}/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+        status = (int)response.StatusCode;
+        var rawJson = await response.Content.ReadAsStringAsync();
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
+            answer = message.GetProperty("content").GetString() ?? "";
+            if (message.TryGetProperty("tool_calls", out var tools)
+                && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0)
+            {
+                toolCall = tools[0].GetProperty("function").GetProperty("name").GetString();
+                // [W3] виконуємо інструмент і додаємо результат до відповіді
+                var result = RunTool(toolCall);
+                if (result != null) answer += $" ({result})";
+            }
+            var usage = doc.RootElement.GetProperty("usage");
+            promptTokens = usage.GetProperty("prompt_tokens").GetInt32();
+            completionTokens = usage.GetProperty("completion_tokens").GetInt32();
+        }
+        catch { answer = "Сервіс тимчасово недоступний."; }
+
+        if (status == 200) cache[cacheKey] = answer;
+    }
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
 
-    // [W2] cost: tokens * ціна моделі
+    // [W2] cost
     decimal? costUsd = prices.TryGetValue(model, out var pr)
         ? Math.Round(promptTokens / 1000m * pr.In + completionTokens / 1000m * pr.Out, 6)
         : null;
 
     // [W1] лог із версією промпта
-    await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, (int)response.StatusCode);
+    await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, status);
 
     return Results.Json(new { request_id = requestId, content = answer, tool = toolCall, latency_ms = latencyMs });
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// [W1] список версій промпта для консолі: [ { name, version, active } ]
+// [W1] реєстр промптів
 app.MapGet("/prompts", async () =>
 {
     var list = new List<object>();
@@ -104,11 +122,11 @@ app.MapGet("/prompts", async () =>
         while (await r.ReadAsync())
             list.Add(new { name = r.GetString(0), version = r.GetString(1), active = r.GetBoolean(2) });
     }
-    catch { /* порожньо, якщо БД ще не готова */ }
+    catch { }
     return Results.Json(list);
 });
 
-// [W1] promote / rollback: робимо активною задану версію support-system
+// [W1] promote / rollback
 app.MapPost("/prompts/{version}/activate", async (string version) =>
 {
     try
@@ -123,9 +141,7 @@ app.MapPost("/prompts/{version}/activate", async (string version) =>
     return Results.Ok(new { activated = version });
 });
 
-// решта — стуби, як у стартері
-app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
-// [W2] cost за сьогодні + бюджет (консоль показує «Вартість сьогодні»)
+// [W2] вартість за сьогодні + бюджет
 app.MapGet("/cost", async () =>
 {
     decimal today = 0;
@@ -140,12 +156,15 @@ app.MapGet("/cost", async () =>
     catch { }
     return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
 });
+
+// решта — стуби
+app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
 app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
 app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
 app.Run("http://0.0.0.0:8080");
 
-// [W1] активний промпт із реєстру; якщо реєстр порожній — розумний дефолт
+// [W1] активний промпт із реєстру
 static async Task<(string version, string body)> GetActivePrompt(string conn)
 {
     try
@@ -184,13 +203,28 @@ static async Task LogRequest(string conn, Guid id, string model, string promptVe
     catch { }
 }
 
-// [W2] проста маршрутизація: ескалацію — на сильнішу модель
+// [W2] маршрутизація: ескалацію — на сильнішу модель
 static string Route(string message, string def)
 {
-    if (def != "mock") return def;  // реальний ключ: беремо задану модель
+    if (def != "mock") return def;
     var u = message.ToLowerInvariant();
     bool escalation = u.Contains("поверн") || u.Contains("терміново") || u.Contains("refund") || u.Contains("скарг");
     return escalation ? "mock-strong" : "mock-mini";
+}
+
+// [W3] мінімальний реєстр інструментів
+static string? RunTool(string name) => name switch
+{
+    "lookup_order" => "статус: оплачено, доставку призначено",
+    "create_ticket" => "тікет #T-" + Guid.NewGuid().ToString("N")[..4],
+    _ => null,
+};
+
+class Stats
+{
+    public int CacheHits;
+    public int CacheMisses;
+    public int Fallbacks;
 }
 
 record ChatIn(string Message);
