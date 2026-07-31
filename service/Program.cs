@@ -29,6 +29,8 @@ var cache = new ConcurrentDictionary<string, string>();
 var stats = new Stats();
 // [W4] черга підтверджень (HITL): id -> (дія, результат). result == null => очікує
 var approvals = new ConcurrentDictionary<string, Approval>();
+// [W4] circuit breaker: N збоїв поспіль -> модель "відкрита" на cooldown
+var breakers = new ConcurrentDictionary<string, Breaker>();
 
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
@@ -65,17 +67,24 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         var ok = false;
         for (int i = 0; i < chain.Length && !ok; i++)
         {
+            var br = breakers.GetOrAdd(chain[i], _ => new Breaker());
+            if (br.OpenUntil > DateTimeOffset.UtcNow) continue;  // [W4] circuit open -> пропускаємо модель
             if (i > 0) Interlocked.Increment(ref stats.Fallbacks);
             var res = await CallGateway(http, gateway, chain[i], systemPrompt, userMessage);
             status = res.status;
             if (res.ok)
             {
+                br.Fails = 0; br.OpenUntil = default;
                 ok = true;
                 model = chain[i];
                 answer = res.answer;
                 toolCall = res.tool;
                 promptTokens = res.pt;
                 completionTokens = res.ct;
+            }
+            else if (++br.Fails >= 3)
+            {
+                br.OpenUntil = DateTimeOffset.UtcNow.AddSeconds(30);  // [W4] відкриваємо на 30с
             }
         }
 
@@ -291,5 +300,7 @@ class Stats
 }
 
 record Approval(string Action, string? Result);
+
+class Breaker { public int Fails; public DateTimeOffset OpenUntil; }
 
 record ChatIn(string Message);
