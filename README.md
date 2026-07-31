@@ -14,8 +14,11 @@
 | [`w5`](../../tree/w5) | W5 | observability-агрегати (`/observability`, `/providers`) |
 | [`w6`](../../tree/w6) | W6 | incident runbook + CI eval gate (фінал) |
 
+У кожному бранчі лежить `HOMEWORK.md` свого тижня — завдання, що здає студент і що
+перевіряє ментор. Тобто бранч = ДЗ + еталонне виконання + критерії поруч.
+
 Кожен бранч запускається `docker compose up --build` і проходить evals на mock (без ключа).
-Перевірено наживо: на `w6` — evals **6/6**, а кеш, HITL, fallback, cost і observability
-наповнюють консоль реальними даними.
+Кожен перевірений наживо окремо (routing-розподіл, кеш 0ms, HITL approve, circuit
+half-open, observability-плитки); на `w6` — evals **6/6**.
 
 Деталі: [SOLUTION_W1.md](SOLUTION_W1.md), [INCIDENT_RUNBOOK.md](INCIDENT_RUNBOOK.md) (на `w6`).
