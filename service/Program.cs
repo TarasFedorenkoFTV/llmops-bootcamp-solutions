@@ -16,6 +16,15 @@ var dbConn = Environment.GetEnvironmentVariable("DB_CONN")
     ?? "Host=postgres;Database=llmops;Username=llmops;Password=llmops";
 var defaultModel = Environment.GetEnvironmentVariable("MODEL") ?? "mock";
 
+// [W2] прайс за 1k токенів (in, out) — навчальні числа
+var prices = new Dictionary<string, (decimal In, decimal Out)>
+{
+    ["mock-mini"] = (0.00015m, 0.0006m),
+    ["mock-strong"] = (0.0025m, 0.01m),
+    ["gpt-4o-mini"] = (0.00015m, 0.0006m),
+    ["gpt-4o"] = (0.0025m, 0.01m),
+};
+
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
     var requestId = Guid.NewGuid();
@@ -23,8 +32,8 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
     // guardrails (W4): поки нічого. TODO(student, W4)
 
-    // routing (W2): поки одна модель. TODO(student, W2)
-    var model = defaultModel;
+    // [W2] routing: ескалація -> сильна модель, решта -> дешева
+    var model = Route(body.Message, defaultModel);
 
     // [W1] промпт беремо з реєстру — активну версію, а не хардкод
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
@@ -69,8 +78,10 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
 
-    // cost (W2): TODO(student, W2)
-    decimal? costUsd = null;
+    // [W2] cost: tokens * ціна моделі
+    decimal? costUsd = prices.TryGetValue(model, out var pr)
+        ? Math.Round(promptTokens / 1000m * pr.In + completionTokens / 1000m * pr.Out, 6)
+        : null;
 
     // [W1] лог із версією промпта
     await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, (int)response.StatusCode);
@@ -114,7 +125,21 @@ app.MapPost("/prompts/{version}/activate", async (string version) =>
 
 // решта — стуби, як у стартері
 app.MapGet("/observability", () => Results.Json(new { todo = "W5" }));
-app.MapGet("/cost", () => Results.Json(new { todo = "W2/W5" }));
+// [W2] cost за сьогодні + бюджет (консоль показує «Вартість сьогодні»)
+app.MapGet("/cost", async () =>
+{
+    decimal today = 0;
+    try
+    {
+        await using var db = new NpgsqlConnection(dbConn);
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM requests WHERE created_at::date = CURRENT_DATE", db);
+        today = (await cmd.ExecuteScalarAsync()) is decimal d ? d : 0;
+    }
+    catch { }
+    return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
+});
 app.MapGet("/providers", () => Results.Json(new { todo = "W7" }));
 app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
@@ -157,6 +182,15 @@ static async Task LogRequest(string conn, Guid id, string model, string promptVe
         await cmd.ExecuteNonQueryAsync();
     }
     catch { }
+}
+
+// [W2] проста маршрутизація: ескалацію — на сильнішу модель
+static string Route(string message, string def)
+{
+    if (def != "mock") return def;  // реальний ключ: беремо задану модель
+    var u = message.ToLowerInvariant();
+    bool escalation = u.Contains("поверн") || u.Contains("терміново") || u.Contains("refund") || u.Contains("скарг");
+    return escalation ? "mock-strong" : "mock-mini";
 }
 
 record ChatIn(string Message);

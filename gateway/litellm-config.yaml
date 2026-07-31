@@ -8,6 +8,18 @@ model_list:
       api_base: http://mock-provider:9000/v1
       api_key: "sk-mock"
 
+  # [W2] дві "моделі" на mock, щоб routing мав із чого обирати без реального ключа
+  - model_name: mock-mini
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1
+      api_key: "sk-mock"
+  - model_name: mock-strong
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1
+      api_key: "sk-mock"
+
   - model_name: gpt-4o-mini
     litellm_params:
       model: openai/gpt-4o-mini
