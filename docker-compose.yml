@@ -14,7 +14,8 @@ services:
     depends_on: [gateway, postgres]
 
   gateway:
-    image: ghcr.io/berriai/litellm:main-latest
+    # nightly-тег рухомий — пінимо перевірений digest, щоб gateway був однаковий у всіх
+    image: ghcr.io/berriai/litellm:main-latest@sha256:80ea654c506da9083503d00c1b323b2fecddf17af6add9bf01b2603938e17bd2
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports: ["4000:4000"]
     volumes:
