@@ -5,6 +5,7 @@
 // Розмову тримає на кілька реплік — це демо-логіка, не справжня модель.
 
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 var app = WebApplication.CreateBuilder(args).Build();
 
@@ -78,10 +79,11 @@ static (string, object?[]?) Reply(string user, bool promptOk, bool garbage)
     // дії — незалежно від промпта
     if (u.Contains("ignore") && u.Contains("instruction"))
         return ("Вибачте, не можу виконати це прохання.", null);
-    if (u.Contains("замовлен") || u.Contains("order") || u.Contains("#"))
-        return ("Перевіряю статус вашого замовлення…", Tool("lookup_order"));
+    // ескалація сильніша за перегляд замовлення: «поверніть гроші за замовлення #123» → тікет
     if (u.Contains("поверн") || u.Contains("терміново") || u.Contains("refund"))
         return ("Створюю тікет і ескалюю на оператора.", Tool("create_ticket"));
+    if (u.Contains("замовлен") || u.Contains("order") || u.Contains("#"))
+        return ("Перевіряю статус вашого замовлення…", Tool("lookup_order"));
 
     // далі — залежить від промпта
     if (!promptOk) return ("не знаю", null);
@@ -89,7 +91,7 @@ static (string, object?[]?) Reply(string user, bool promptOk, bool garbage)
         return ("Щоб скинути пароль: відкрийте сторінку входу, натисніть «Забули пароль» і перевірте email.", null);
     if (u.Contains("що ти можеш") || u.Contains("можеш") || u.Contains("допомог"))
         return ("Можу допомогти зі входом, замовленнями та поверненнями. З чим саме допомогти?", null);
-    if (u.Contains("привіт") || u.Contains("вітаю") || u.Contains("hello") || u.Contains("hi"))
+    if (u.Contains("привіт") || u.Contains("вітаю") || u.Contains("hello") || Regex.IsMatch(u, @"\bhi\b"))
         return ("Вітаю! Розкажіть, що сталося — допоможу розібратися.", null);
     if (u.Contains("дякую") || u.Contains("thanks"))
         return ("Будь ласка! Є ще щось, із чим допомогти?", null);
