@@ -1,24 +1,25 @@
-# LLMOps bootcamp — SOLUTIONS
+# LLMOps Bootcamp — еталонні рішення
 
-Еталонні рішення capstone. По одному тижню на бранч, **кумулятивно** (кожен бранч =
-попередній + новий тиждень). На `main` — цей лендинг.
+Еталони до курсу [llmops-bootcamp](https://github.com/TarasFedorenkoFTV/llmops-bootcamp).
+Один бранч = один тиждень: `w1` … `w6` (кумулятивно — кожен наступний містить попередні).
 
-Стартер для студентів: `TarasFedorenkoFTV/llmops-bootcamp`.
+**Цей бранч (`main`): реалізовано базовий рівень** — той самий стек; тижневі рішення — у бранчах `w1`…`w6`.
 
-| Бранч | Тиждень | Що додано |
-|---|---|---|
-| [`w1`](../../tree/w1) | W1 | prompt registry: активний промпт з БД, версія в лозі, `/prompts`, promote/rollback |
-| [`w2`](../../tree/w2) | W2 | routing (intent → модель) + cost attribution + `/cost` |
-| [`w3`](../../tree/w3) | W3 | in-memory cache + виконання інструментів |
-| [`w4`](../../tree/w4) | W4 | fallback + graceful degradation, HITL-approval, PII-guardrail |
-| [`w5`](../../tree/w5) | W5 | observability-агрегати (`/observability`, `/providers`) |
-| [`w6`](../../tree/w6) | W6 | incident runbook + CI eval gate (фінал) |
+## Як цим користуватися (студенту)
 
-У кожному бранчі лежить `HOMEWORK.md` свого тижня — завдання, що здає студент і що
-перевіряє ментор. Тобто бранч = ДЗ + еталонне виконання + критерії поруч.
+Спершу — власна спроба, потім звірка. Еталон учить лише після того, як ти сам(-а)
+вперся(-лась) у проблему; інакше це просто чужий код у твоєму репозиторії.
+Твої ДЗ живуть у **твоєму** репозиторії (див. `GETTING_STARTED.md` §11 крок 0
+у публічному стартері) і залишаються тобі після курсу.
 
-Кожен бранч запускається `docker compose up --build` і проходить evals на mock (без ключа).
-Кожен перевірений наживо окремо (routing-розподіл, кеш 0ms, HITL approve, circuit
-half-open, observability-плитки); на `w6` — evals **6/6**.
+Канонічні формулювання завдань і критерії приймання — у публічному репо курсу:
+`starter/homework/hw1.md` … `hw6.md`. Тут їх копій немає, щоб не розходилися.
 
-Деталі: [SOLUTION_W1.md](SOLUTION_W1.md), [INCIDENT_RUNBOOK.md](INCIDENT_RUNBOOK.md) (на `w6`).
+## Запуск
+
+```bash
+docker compose up --build     # той самий стек, що у стартері
+```
+
+Ключові місця рішень підписані коментарями `[W1]`, `[W2]`, … у
+`service/Program.cs`.
