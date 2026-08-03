@@ -28,6 +28,6 @@ CREATE INDEX IF NOT EXISTS idx_requests_model ON requests (model);
 -- [W1 reference] дві версії системного промпта. Активна — v2 (містить «support»).
 -- v1 без «support» — щоб показати відкат: активуй v1 і побачиш регресію (mock почне «не знаю»).
 INSERT INTO prompts (name, version, body, active) VALUES
-    ('support-system', 'v1', 'You are an assistant.', true),
-    ('support-system', 'v2', 'You are a support assistant. Be concise and helpful.', false)
+    ('support-system', 'v1', 'You are an assistant.', false),
+    ('support-system', 'v2', 'You are a support assistant. Be concise and helpful.', true)
 ON CONFLICT (name, version) DO NOTHING;
