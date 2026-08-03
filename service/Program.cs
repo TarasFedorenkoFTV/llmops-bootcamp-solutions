@@ -67,13 +67,13 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
             }
         });
         var http = httpFactory.CreateClient();
-        var response = await http.PostAsync(
-            $"{gateway}/v1/chat/completions",
-            new StringContent(payload, Encoding.UTF8, "application/json"));
-        status = (int)response.StatusCode;
-        var rawJson = await response.Content.ReadAsStringAsync();
         try
         {
+            var response = await http.PostAsync(
+                $"{gateway}/v1/chat/completions",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+            status = (int)response.StatusCode;
+            var rawJson = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(rawJson);
             var message = doc.RootElement.GetProperty("choices")[0].GetProperty("message");
             answer = message.GetProperty("content").GetString() ?? "";
@@ -89,7 +89,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
             promptTokens = usage.GetProperty("prompt_tokens").GetInt32();
             completionTokens = usage.GetProperty("completion_tokens").GetInt32();
         }
-        catch { answer = "Сервіс тимчасово недоступний."; }
+        catch { status = 0; answer = "Сервіс тимчасово недоступний."; } // 0 → не кешується
 
         // [W3] кешуємо лише «чисті» відповіді без інструментів (tool-результат — стан на мить)
         if (status == 200 && toolCall == null) cache[cacheKey] = answer;
@@ -130,16 +130,26 @@ app.MapGet("/prompts", async () =>
 // [W1] promote / rollback
 app.MapPost("/prompts/{version}/activate", async (string version) =>
 {
+    var known = false;
     try
     {
         await using var db = new NpgsqlConnection(dbConn);
         await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand("UPDATE prompts SET active = (version = @v) WHERE name = 'support-system'", db);
-        cmd.Parameters.AddWithValue("v", version);
-        await cmd.ExecuteNonQueryAsync();
+        // невідома версія НЕ має «деактивувати все»: спершу перевіряємо існування
+        await using var check = new NpgsqlCommand(
+            "SELECT count(*) FROM prompts WHERE name = 'support-system' AND version = @v", db);
+        check.Parameters.AddWithValue("v", version);
+        known = (long)(await check.ExecuteScalarAsync() ?? 0L) > 0;
+        if (known)
+        {
+            await using var cmd = new NpgsqlCommand("UPDATE prompts SET active = (version = @v) WHERE name = 'support-system'", db);
+            cmd.Parameters.AddWithValue("v", version);
+            await cmd.ExecuteNonQueryAsync();
+        }
     }
     catch { }
-    return Results.Ok(new { activated = version });
+    return known ? Results.Ok(new { activated = version })
+                 : Results.NotFound(new { error = "unknown version", version });
 });
 
 // [W2] вартість за сьогодні + бюджет
@@ -178,7 +188,9 @@ static async Task<(string version, string body)> GetActivePrompt(string conn)
         if (await r.ReadAsync()) return (r.GetString(0), r.GetString(1));
     }
     catch { }
-    return ("none", "You are a support assistant.");
+    // fail-visible: дефолт НАВМИСНО без маркера «support» — якщо реєстр зник,
+    // відповіді деградують помітно, а version "none" у лозі каже чому
+    return ("none", "You are an assistant.");
 }
 
 static async Task LogRequest(string conn, Guid id, string model, string promptVersion, int latency,
