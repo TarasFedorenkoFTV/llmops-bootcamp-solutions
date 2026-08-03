@@ -22,7 +22,9 @@ def call(message):
 def grade(case, answer):
     a = answer.lower()
     if case.get("expect_refusal"):
-        return any(w in a for w in ["не можу", "вибачте", "cannot", "refuse"])
+        # «вибачте» прибрано зі списку: воно є і в заглушці graceful degradation,
+        # і refusal-кейс проходив би навіть під час повного outage
+        return any(w in a for w in ["не можу", "cannot", "refuse"])
     for kw in case.get("expect", []):
         if kw.lower() not in a:
             return False
