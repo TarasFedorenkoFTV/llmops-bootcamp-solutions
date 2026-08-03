@@ -90,7 +90,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
             }
             else if (++br.Fails >= 3)
             {
-                br.OpenUntil = DateTimeOffset.UtcNow.AddSeconds(30);  // [W4] відкриваємо на 30с (probe кожні 5с)
+                { br.OpenUntil = DateTimeOffset.UtcNow.AddSeconds(30); br.NextProbe = DateTimeOffset.UtcNow.AddSeconds(5); }  // [W4] open 30с; перший probe — через 5с, а не одразу
             }
         }
 
@@ -151,16 +151,26 @@ app.MapGet("/prompts", async () =>
 
 app.MapPost("/prompts/{version}/activate", async (string version) =>
 {
+    var known = false;
     try
     {
         await using var db = new NpgsqlConnection(dbConn);
         await db.OpenAsync();
-        await using var cmd = new NpgsqlCommand("UPDATE prompts SET active = (version = @v) WHERE name = 'support-system'", db);
-        cmd.Parameters.AddWithValue("v", version);
-        await cmd.ExecuteNonQueryAsync();
+        // невідома версія НЕ має «деактивувати все»: спершу перевіряємо існування
+        await using var check = new NpgsqlCommand(
+            "SELECT count(*) FROM prompts WHERE name = 'support-system' AND version = @v", db);
+        check.Parameters.AddWithValue("v", version);
+        known = (long)(await check.ExecuteScalarAsync() ?? 0L) > 0;
+        if (known)
+        {
+            await using var cmd = new NpgsqlCommand("UPDATE prompts SET active = (version = @v) WHERE name = 'support-system'", db);
+            cmd.Parameters.AddWithValue("v", version);
+            await cmd.ExecuteNonQueryAsync();
+        }
     }
     catch { }
-    return Results.Ok(new { activated = version });
+    return known ? Results.Ok(new { activated = version })
+                 : Results.NotFound(new { error = "unknown version", version });
 });
 
 app.MapGet("/cost", async () =>
@@ -191,7 +201,9 @@ app.MapGet("/approvals", () =>
 // [W4] підтвердити дію -> виконати інструмент
 app.MapPost("/approvals/{id}/approve", (string id) =>
 {
-    if (approvals.TryGetValue(id, out var a) && a.Result == null)
+    // атомарне захоплення (TryUpdate): два одночасні approve не виконають дію двічі
+    if (approvals.TryGetValue(id, out var a) && a.Result == null
+        && approvals.TryUpdate(id, a with { Result = "in-progress" }, a))
     {
         var result = RunTool(a.Action) ?? "виконано";
         approvals[id] = a with { Result = result };
@@ -230,9 +242,13 @@ app.MapGet("/observability", async () =>
 });
 
 // [W5] здоров'я провайдерів (на mock — завжди ok)
+// [W5] чесний статус: плитка не має права зеленіти посеред інциденту
 app.MapGet("/providers", () => Results.Json(new
 {
-    providers = new[] { new { name = "mock", status = "ok" } }
+    providers = new[] { new {
+        name = "mock",
+        status = breakers.Values.Any(b => b.OpenUntil > DateTimeOffset.UtcNow) ? "degraded" : "ok"
+    } }
 }));
 
 app.Run("http://0.0.0.0:8080");
@@ -286,7 +302,9 @@ static async Task<(string version, string body)> GetActivePrompt(string conn)
         if (await r.ReadAsync()) return (r.GetString(0), r.GetString(1));
     }
     catch { }
-    return ("none", "You are a support assistant.");
+    // fail-visible: дефолт НАВМИСНО без маркера «support» — якщо реєстр зник,
+    // відповіді деградують помітно, а version "none" у лозі каже чому
+    return ("none", "You are an assistant.");
 }
 
 static async Task LogRequest(string conn, Guid id, string model, string promptVersion, int latency,
