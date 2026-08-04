@@ -8,7 +8,7 @@ model_list:
       api_base: http://mock-provider:9000/v1
       api_key: "sk-mock"
 
-  # [W2] дві "моделі" на mock, щоб routing мав із чого обирати без реального ключа
+  # дві "моделі" на mock — щоб routing (W2) мав із чого обирати без реального ключа
   - model_name: mock-mini
     litellm_params:
       model: openai/mock
@@ -20,6 +20,12 @@ model_list:
       api_base: http://mock-provider:9000/v1
       api_key: "sk-mock"
 
+  # УВАГА (урок 3): нижче — alias'и, а не снапшоти. Провайдер оновлює модель за
+  # такою назвою без вашої участі — це «регресія без коміта» з уроку 2, тільки
+  # причина поза вашою організацією. У проді пінять конкретний снапшот, напр.
+  #     model: openai/gpt-4o-mini-2024-07-18
+  # і перехід на новий снапшот їде окремим PR через eval-гейт (урок 11).
+  # Тут alias свідомо: реальний ключ опційний, і механіку ми перевіряємо на mock.
   - model_name: gpt-4o-mini
     litellm_params:
       model: openai/gpt-4o-mini
@@ -38,4 +44,4 @@ model_list:
 
 litellm_settings:
   drop_params: true
-  num_retries: 0   # хай збої йдуть у сервіс, а не ретраяться приховано
+  num_retries: 0   # збої віддаємо в сервіс (reliability — робота студента), не ретраїмо приховано
