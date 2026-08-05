@@ -37,6 +37,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
     // [W2] routing
     var model = Route(body.Message, defaultModel);
+    // [W2] fallback-порядок (зафіксовано; кодом стане у W4): обрана модель -> mock -> ввічлива заглушка
 
     // [W1] активний промпт із реєстру
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
