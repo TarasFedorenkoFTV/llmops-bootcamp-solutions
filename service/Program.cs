@@ -188,14 +188,19 @@ app.MapGet("/cost", async () =>
     return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
 });
 
-// [W4] черга HITL: pending — ті, що очікують
+// [W4] черга HITL: pending — очікують; done — виконані зі своїм result
+// (спостережуваний слід: «дія не сталася до approve» і «рівно один тікет» перевіряються тут)
 app.MapGet("/approvals", () =>
 {
     var pending = approvals
         .Where(kv => kv.Value.Result == null)
         .Select(kv => new { id = kv.Key, action = kv.Value.Action })
         .ToList();
-    return Results.Json(new { pending });
+    var done = approvals
+        .Where(kv => kv.Value.Result != null)
+        .Select(kv => new { id = kv.Key, action = kv.Value.Action, result = kv.Value.Result })
+        .ToList();
+    return Results.Json(new { pending, done });
 });
 
 // [W4] підтвердити дію -> виконати інструмент
