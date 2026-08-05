@@ -23,14 +23,22 @@ fallback + graceful degradation (W4) і лічильники в /observability (
    з новими успішними запитами). `fallback_events` — кумулятивний лічильник,
    він **не спадає**, і це очікувано.
 
+> **Windows/Git Bash:** кирилиця в інлайн-аргументі `curl -d` спотворюється
+> (гайд для студента, розділ про перевірку) — тому повідомлення тут ідуть
+> **з файлів**. Підступ у тому, що інлайн «іноді працює» (крок 3 матчиться по
+> `#` і цифрах, які переживають спотворення), а крок 1 — ні; для рунбука
+> «іноді» гірше за стабільний збій. Альтернатива — виконувати кроки з
+> повідомленнями в чаті UI.
+
 ```bash
-curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"Як скинути пароль?"}'                     # 1. норма
-curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"__fail_503"}'                             # 2. graceful degradation
+printf '{"message":"Як скинути пароль?"}'        > /tmp/rb1.json
+printf '{"message":"__fail_503"}'                > /tmp/rb2.json
+printf '{"message":"Де моє замовлення #10482?"}' > /tmp/rb3.json
+
+curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json"   --data @/tmp/rb1.json                                     # 1. норма
+curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json"   --data @/tmp/rb2.json                                     # 2. graceful degradation
 curl -s http://localhost:8080/observability                 #    fallback_events > 0
-curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"Де моє замовлення #10482?"}'              # 3. recovery: НОВЕ питання, не з кешу
+curl -s -X POST http://localhost:8080/chat -H "Content-Type: application/json"   --data @/tmp/rb3.json                                     # 3. recovery: НОВЕ питання, не з кешу
 ```
 
 **Про кеш після інциденту.** Заглушки деградації в кеш не потрапляють (умова
