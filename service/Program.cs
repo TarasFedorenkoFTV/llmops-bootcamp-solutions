@@ -157,7 +157,7 @@ app.MapGet("/approvals", () => Results.Json(new { todo = "W4" }));
 
 app.Run("http://0.0.0.0:8080");
 
-// [W1] активний промпт із реєстру; якщо реєстр порожній — розумний дефолт
+// [W1] активний промпт із реєстру; якщо реєстр порожній — fail-visible дефолт (деградація помітна, version=none)
 static async Task<(string version, string body)> GetActivePrompt(string conn)
 {
     try
