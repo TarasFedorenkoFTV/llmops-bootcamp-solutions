@@ -98,7 +98,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         {
             // graceful degradation — усі спроби невдалі
             answer = "Вибачте, тимчасові проблеми на нашому боці. Спробуйте, будь ласка, трохи згодом.";
-            status = status == 200 ? 503 : status;
+            status = (status == 200 || status == 0) ? 503 : status;
         }
         else if (toolCall != null)
         {
